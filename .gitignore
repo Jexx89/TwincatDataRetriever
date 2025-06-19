@@ -1,5 +1,8 @@
+.venv/
+testing/
+
 *.html
 *.xlsx
 *.log
-.venv/
-recording/
+*.json
+
