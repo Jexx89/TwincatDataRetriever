@@ -1,10 +1,7 @@
 '''
-
 TODO : depending on the PLC, différent kind of data could be measured
 make a list fot each PLC of the variable we need
 note : we could creat a datastrucure to importe all in one go !
-
-
 '''
 
 import json
@@ -14,7 +11,7 @@ os.add_dll_directory("C:\\TwinCAT\\AdsApi\\TcAdsDll\\x64")
 from pyads import PORT_TC2PLC1
 
 CONFIG_FILE = "config.json"
-TIMEOUT_PLC = 10 #in secondes
+TIMEOUT_PLC = 3 #in secondes
 FAST_SAMPLING_TIME = 1 #in secondes
 SLOW_SAMPLING_TIME = 60 #in secondes
 
@@ -38,15 +35,6 @@ def get_routes_config():
     if routes:
         return routes
 
-    # # Ask the user to select a file if path not set or doesn't exist
-    # Tk().withdraw()  # Hide the root window
-    # path = filedialog.askopenfilename(
-    #     title="Select Excel file",
-    #     filetypes=[("Excel files", "*.xlsx *.xls")]
-    # )
-
-    #if path:
-    
     routes = {
         "ACV-2111-1":{"ACTIVE":False,"ROUTE_NAME":"ACV-2111-1", "AMS_NET_ID":"10.171.108.11.1.1", "TRANSPORT": "TCP/IP", "IP_ADDRESS":"10.171.108.11", "PORT": PORT_TC2PLC1, "TIMEOUT":TIMEOUT_PLC, "FAST_SAMPLING_TIME":FAST_SAMPLING_TIME,"SLOW_SAMPLING_TIME":SLOW_SAMPLING_TIME, "USERNAME":"Administrator", "PASSWORD":"", "DESCRIPTION":"Banc de test 1 FSB"},
         "ACV-2111-2":{"ACTIVE":False,"ROUTE_NAME":"ACV-2111-2", "AMS_NET_ID":"10.171.108.12.1.1", "TRANSPORT": "TCP/IP", "IP_ADDRESS":"10.171.108.12", "PORT": PORT_TC2PLC1, "TIMEOUT":TIMEOUT_PLC,  "FAST_SAMPLING_TIME":FAST_SAMPLING_TIME,"SLOW_SAMPLING_TIME":SLOW_SAMPLING_TIME, "USERNAME":"Administrator", "PASSWORD":"", "DESCRIPTION":"Banc de test 2 WSB"},
@@ -61,12 +49,21 @@ def get_routes_config():
     }
     config['routes'] = routes
 
-    config["other"] = "not defined yet"
+    config['recording'] = {"Excel" : {"folder_path" : "C:\\ACV\\Coding Library\\Python\\TwincatDataRetriever\\Recording\\Excel"},
+                            "CSV" : {"folder_path" : "C:\\ACV\\Coding Library\\Python\\TwincatDataRetriever\\Recording\\CSV"},
+                            "SQL" : {"parameter" : "not defined yet"}}
+
     save_config(config)
     return routes
     # else:
     #     raise FileNotFoundError("No Excel file selected.")
 
-if __name__=="__main__":
+
+def main():
     test = get_routes_config()
     print(test)
+
+
+
+if __name__=="__main__":
+    main()
