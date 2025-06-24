@@ -13,11 +13,10 @@ from PLC_Manager import PLC_Manager as PLC
 def main():
     manager = PLC()
     manager.start()
-    manager.record()
 
     sleep(30)
 
-    manager.close()
+    manager.stop()
     
 
 
