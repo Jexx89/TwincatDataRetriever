@@ -2,7 +2,7 @@
 
 TODO : 
 * import DLL twincat automatically (consider the application on a computer with twincat not installed)
-)) only to initiate the branch "dev"
+)) 
 '''
 
 # %% import library
@@ -14,11 +14,10 @@ def main():
     manager = PLC()
     manager.start()
 
-    sleep(30)
+    sleep(300)
 
     manager.stop()
     
-
 
 # %% testing
 if __name__ == '__main__':

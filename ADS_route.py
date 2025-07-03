@@ -11,6 +11,7 @@ from datetime import datetime
 from queue import Queue
 import logging
 from time import sleep
+# import ctypes
 
 import os
 os.add_dll_directory("C:\\TwinCAT\\AdsApi\\TcAdsDll\\x64")
@@ -26,9 +27,15 @@ MAX_SEQ_VAL = 30
 class ADS:
     def __init__(self,route_cfg):
         self.route_cfg=route_cfg
+        self.sh_var = SharedVariable(self.route_cfg["SLOW_SAMPLING_TIME"])
+        self.monitor_interval =self.route_cfg["TIMEOUT"]
         self.msg_route = f"{self.route_cfg["ROUTE_NAME"]}:{self.route_cfg["IP_ADDRESS"]}"
+
         self.plc = pyads.Connection(self.route_cfg["AMS_NET_ID"],self.route_cfg["PORT"],self.route_cfg["IP_ADDRESS"])
         self.connected = False
+
+        self.stop_monitor_event = Event()
+        self.plc_monitor_thread = Thread(target=self.monitor, args = [self.stop_monitor_event])
 
     def creat_route(self):
         '''
@@ -61,7 +68,7 @@ class ADS:
                 logging.info(f"Disconnected from PLC at {self.msg_route}")
             except Exception as e:
                 logging.error(f"Error while disconnecting from {self.msg_route}: {e}")
-    
+
     def ads_state_to_name(self,code: int) -> str:
         ads_states = {
             0: "ADSSTATE_INVALID",
@@ -106,80 +113,6 @@ class ADS:
         }
         return plc_states.get(code, f"UNKNOWN_STATE ({code})")
 
-
-#%%ads monitoring
-class ADS_monitoring(ADS):
-    def __init__(self,route_cfg):
-        super().__init__(route_cfg)
-        self.stop_monitor_event = Event()
-        self.plc_monitor_thread = Thread(target=self.monitor, args = [self.stop_monitor_event])
-        self.monitor_interval =self.route_cfg["TIMEOUT"]
-        
-    def start(self):
-        if not self.plc_monitor_thread.is_alive():
-            self.plc_monitor_thread.start()
-
-    def stop(self):
-        self.stop_monitor_event.set()
-
-    def monitor(self,stop_event):
-        logging.info(f"Starting monitoring for {self.msg_route}")
-        while not stop_event.is_set():
-            if not self.connected:
-                self.connect()
-            else:
-                # Check connection status periodically
-                try:
-                    plc_state, ads_state = self.plc.read_state()  # tuple[int;int]  ==> adsState, deviceState
-                    logging.info(f"PLC State: {self.plc_state_to_name(plc_state)}, ADS State: {self.ads_state_to_name(ads_state)}")
-                except Exception as e:
-                    logging.error(f"Connection to {self.msg_route} lost: {e}")
-                    self.connected = False
-            sleep(self.monitor_interval)
-            # print(f"stop_monitoring_event : {self.stop_event.is_set()}//connected : {self.connected}// {self.route_cfg["TIMEOUT"]}")
-
-#%%ads recording
-class ADS_read(ADS):
-    def __init__(self,route_cfg, data:Queue):
-        super().__init__(route_cfg)
-        self.sh_var = SharedVariable(self.route_cfg["SLOW_SAMPLING_TIME"])
-        self.data = data
-        self.stop_record_event = Event()
-        self.stop_monitor_event = Event()
-        self.plc_monitor_thread = Thread(target=self.monitor, args = [self.stop_monitor_event])
-        self.plc_read_thread = Thread(target=run_task, args = (self.stop_record_event,self.sh_var,self.plc_read))
-        self.monitor_interval =self.route_cfg["TIMEOUT"]
-        
-        
-
-    def start(self):
-        if not self.plc_read_thread.is_alive():
-            logging.info(f"Starting recording for {self.msg_route}")
-            self.plc_read_thread.start()
-        if not self.plc_monitor_thread.is_alive():
-            self.plc_monitor_thread.start()
-
-    def stop(self):
-        self.record_interval = 0.5
-        self.sh_var.set(self.record_interval)
-        self.stop_record_event.set()
-        
-        self.plc_read_thread.join()
-        self.plc_monitor_thread.join()
-
-    def plc_read(self):
-        if self.connected:
-            # Check connection status periodically
-            try:
-                data = self.plc.read_by_name(".TIME_NOW", pyads.PLCTYPE_STRING)
-                #add functionnalities to check data
-                # // from PLC : ROUTE_NAME // data - time // data
-                record_data = [self.route_cfg["ROUTE_NAME"],datetime.now(),data]
-                self.data.put(record_data)
-            except Exception as e:
-                logging.error(f"Connection to {self.msg_route} lost: {e}")
-                self.connected = False
-
     def monitor(self,stop_event):
         logging.info(f"Starting monitoring for {self.msg_route}")
         while not stop_event.is_set():
@@ -191,31 +124,37 @@ class ADS_read(ADS):
                     plc_state, ads_state = self.plc.read_state()  # tuple[int;int]  ==> adsState, deviceState
                     self.record_interval = self.update_sampling_time()
                     self.sh_var.set(self.record_interval)
-                    logging.info(f"{self.route_cfg["ROUTE_NAME"]} PLC State: {self.plc_state_to_name(plc_state)}, ADS State: {self.ads_state_to_name(ads_state)}")
+                    logging.info(f"{self.route_cfg["ROUTE_NAME"]}\t PLC State: {self.plc_state_to_name(plc_state)},\t SEQUENCE : {self.SEQ} - {self.SEQ_14}")
                 except Exception as e:
-                    logging.error(f"Connection to {self.msg_route} lost: {e}")
+                    logging.error(f"Error while monitoring {self.msg_route} lost: {e}")
                     self.connected = False
+                    if '(7)' in str(e): self.ERR_Missing_ads_route()
             sleep(self.monitor_interval)
 
+    def ERR_Missing_ads_route(self):
+        logging.info(f"{self.route_cfg["ROUTE_NAME"]} as a route error, the thread will be terminated")
+        self.stop_monitor_event.set()
+
     def update_sampling_time(self):
+        self.SEQ = self.get_actual_global_test_sequence()
+        self.SEQ_14 = self.get_actual_f14_test_sequence()
         try:
             if self.night_standby():
                 return self.route_cfg["SLOW_SAMPLING_TIME"]*60 # considering slow = 60sec ==> take data every hour 
-            if self.test_ongoing():
+            if self.test_ongoing(self.SEQ):
                 return self.route_cfg["SLOW_SAMPLING_TIME"]/2
-            if self.test_f14_ongoing():
+            if self.test_f14_ongoing(self.SEQ_14):
                 return self.route_cfg["FAST_SAMPLING_TIME"]
             return self.route_cfg["SLOW_SAMPLING_TIME"]
         except Exception as e : 
+            logging.error(f"Error defining sampling timr in {self.route_cfg["ROUTE_NAME"]}")
             return self.route_cfg["SLOW_SAMPLING_TIME"]
 
-    def test_ongoing(self):
-        seq_test = self.get_actual_global_test_sequence()
-        return MIN_SEQ_VAL < seq_test and seq_test < MAX_SEQ_VAL
+    def test_ongoing(self,SEQ):
+        return MIN_SEQ_VAL < SEQ and SEQ < MAX_SEQ_VAL
 
-    def test_f14_ongoing(self):
-        f14_seq_fct = self.get_actual_f14_test_sequence()
-        return 0 < f14_seq_fct
+    def test_f14_ongoing(self,SEQ_14):
+        return 0 < SEQ_14
 
     def night_standby(self):
         actual_time = datetime.now().time()
@@ -226,3 +165,109 @@ class ADS_read(ADS):
 
     def get_actual_f14_test_sequence(self):
         return self.plc.read_by_name("F14_TEST_PRINCIPALE.SEQ_FCT", pyads.PLCTYPE_INT)
+
+#%%ads monitoring
+class ADS_monitoring(ADS):
+    def __init__(self,route_cfg):
+        super().__init__(route_cfg)
+
+    def start(self):
+        if not self.plc_monitor_thread.is_alive():
+            self.plc_monitor_thread.start()
+
+    def stop(self):
+        logging.info(f"Stopping : {self.route_cfg["ROUTE_NAME"]}")
+        self.stop_monitor_event.set()
+        self.plc_monitor_thread.join()
+
+#%%ads reading
+class ADS_read(ADS):
+    def __init__(self,route_cfg, data:Queue, structure_def):
+        super().__init__(route_cfg)
+        self.data = data
+        self.structure_def = structure_def
+        self.stop_record_event = Event()
+        self.plc_read_thread = Thread(target=run_task, args = [self.stop_record_event,self.sh_var,self.plc_read])
+
+    def start(self):
+        
+        if not self.plc_read_thread.is_alive():
+            logging.info(f"Starting recording for {self.msg_route}")
+            self.MONITORING = self.initializing_data_symbole()
+            self.plc_read_thread.start()
+
+        if not self.plc_monitor_thread.is_alive():
+            self.plc_monitor_thread.start()
+
+    def stop(self):
+        logging.info(f"Stopping : {self.route_cfg["ROUTE_NAME"]}")
+        self.record_interval = 0.5
+        self.sh_var.set(self.record_interval)
+        self.stop_monitor_event.set()
+        self.stop_record_event.set()
+        
+        self.plc_read_thread.join()
+        self.plc_monitor_thread.join()
+
+    def plc_read(self):
+        if self.connected:
+            # Check connection status periodically
+            try:
+                # data = self.plc.read_by_name(".TIME_NOW", pyads.PLCTYPE_STRING)
+                #self.plc.read_by_name(".MONITORING",self.structure_def)
+                #add functionnalities to check data
+                # // from PLC : ROUTE_NAME // data - time // data
+                #record_data = [self.route_cfg["ROUTE_NAME"],datetime.now(),data]
+                temp_data = self.MONITORING.read() 
+                record_data = {"NAME" : self.route_cfg["ROUTE_NAME"], "DATA": dict(temp_data), "DATE TIME": datetime.now()}
+                #print(record_data)
+                self.data.put(record_data)
+                logging.info(f"Reading : {self.route_cfg["ROUTE_NAME"]}")
+
+            except Exception as e:
+                logging.error(f"Error while reading {self.msg_route} lost: {e}")
+                self.connected = False
+                if '(7)' in str(e): self.ERR_Missing_ads_route()
+
+    def initializing_data_symbole(self):
+        '''
+        Structure PLCs
+        -----
+
+        Main data structure in the PLCs
+            TYPE MONITORING_DATA :
+            STRUCT
+                PLC_TIME				:STRING(20);
+                RIG_WATER_T_IN			:REAL;
+                RIG_WATER_T_OUT			:REAL;
+                RIG_WATER_T_REGUL		:REAL;
+                RIG_WATER_FLOW			:REAL;
+                RIG_WATER_FLOW_REGUL	:REAL;
+                RIG_WATER_PRESS			:REAL;
+
+
+                RIG_AMB_T				:REAL;
+                RIG_AMB_PRESS			:REAL;
+
+                RIG_GAZ_T				:REAL;
+                RIG_GAZ_PRESS			:REAL;
+                RIG_GAZ_PRESS_REGUL		:REAL;
+                RIG_GAZ_DEBIT			:REAL;
+                RIG_GAZ_CUMUL			:LREAL;
+                RIG_GAZ_PRESS_OFF		:REAL;
+
+                RIG_FLUE_T				:REAL;
+                RIG_FLUE_CO				:REAL;
+                RIG_FLUE_CO2			:REAL;
+
+                SEQ						:INT;
+                SEQ_FCT14				:INT;
+            END_STRUCT
+            END_TYPE
+        '''
+        return self.plc.get_symbol(name=".MONITORING",structure_def=self.structure_def)
+
+    def ERR_Missing_ads_route(self):
+        logging.info(f"{self.route_cfg["ROUTE_NAME"]} as a route error, the thread will be terminated")
+        self.stop_monitor_event.set()
+        self.stop_record_event.set()
